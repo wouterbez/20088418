@@ -1,0 +1,196 @@
+---
+title: "An investigation of the USDZAR from numerous angles"
+author: "Wouter Bezuidenhout"
+output: pdf_document
+---
+
+# Setup 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pacman)
+pacman::p_load("tidyverse", "fmxdat", "devtools", "tbl2xts", "lubridate", "readr",
+"PerformanceAnalytics", "tidyr", "FactoMineR", "factoextra", "rugarch", "forecast", "RcppRoll")
+```
+
+# Import Data 
+
+```{r}
+cncy <- read_rds("data/currencies.rds")
+cncy_Carry <- read_rds("data/cncy_Carry.rds")
+cncy_value <- read_rds("data/cncy_value.rds")
+cncyIV <- read_rds("data/cncyIV.rds")
+bbdxy <- read_rds("data/bbdxy.rds")
+```
+
+# Overview of the investigation 
+
+The aim of this report is to comment on the following statements. Firstly, the USDZAR has over the past few years been one of the most volatile currencies. Secondly, the USDZAR has performed well during periods where carry trades were favorable and currency valuations were relatively cheap. Lastly, the ZAR benefits from a strong Dollar, indicating a risk-on sentiment. The structure of the report follows in three sections where each section is dedicated to tackling on the statements. 
+
+# 1 - USDZAR volatility 
+
+This section investigates whether the ZAR has been one of the most volatile currencies in recent years. I begin by consulting the Currency Implied Volatility index which can be considered similar to the VIX index but for currencies. The index uses put and call options to guage the market's forward implied volatility. A higher value indicates the market foresees higher future volatility for a currency. I argue that although this is not realised volatility, investors do take a position regarding volatility in the market by using contracts. For visual ease, I limit my investigation to larger EMEs and the UK and EU. The figure shows South Africa (blue) experienced two large spikes in implied volatility, firstly around 2002 and then around the GFC. But, besides those two periods, the figure does not present anecdotal evidnce suggesting that the USD/ZAR is more volatile recently, nor more volatile than any other EME currency. 
+
+```{r}
+## ZAR is most volatile. I use the cncyIV, implied volatility.
+# A higher value indicates the market foresees higher future volatility for a currency.
+number_of_cncyIV <- read_rds("data/cncyIV.rds") %>% group_by(date) %>% pull(Name) %>% unique()
+
+cncyIV <- read_rds("data/cncyIV.rds") %>% filter(Name %in% c("Brazil_IV", "EU_IV",
+"UK_IV", "Turkey_IV", "Russia_IV", "India_IV", "SouthAfrica_IV")) %>%
+filter(date > ymd(20000101)) %>% ggplot() +
+geom_line(aes(x = date, y = Price, color = Name), size = 1, alpha = 0.8) +
+fmxdat::fmx_cols() +
+labs(x = "Date", title = "Implied Volatility of a chosen basket of currencies",
+subtitle = "Higher value indicates greater expected volatility")
+cncyIV
+
+```
+
+It is worth focusing specifically on USD/ZAR's volatility. I construct a figure below that compares a sample variance, rolling variance and constant variance for the USD/ZAR. It seems the rolling variance does the best job to isolate signal and noise, and it seems it has stabilised in recent periods. Therefore, relevative to its own historical levels, there is not increased volatility in the USD/ZAR. In this section one, I have provided anecdotal evidence suggesting that the USD/ZAR has not been one of the most volatile currencies, nor has it been more volatile recently than periods before. 
+
+```{r,  warning=F}
+
+cncy_names <- read_rds("data/currencies.rds") %>% group_by(date) %>% pull(Name) %>% unique()
+
+cncy_SD <- read_rds("data/currencies.rds") %>% filter(Name %in% c("SouthAfrica_Cncy")) %>%
+mutate(across(.cols = Price, .fns = ~./lag(.)-1, .names = "Return")) %>% select(-Price) %>%
+arrange(date) %>% slice(-1) %>%
+mutate(across(.cols = Return, .fns = ~sqrt(.^2), .names = "SampleSD"))
+
+plot_cncy_SD <- cncy_SD %>% ggplot() + geom_line(aes(date, SampleSD))
+back = 100
+roll_plot <- cncy_SD %>% mutate(Constant_var = sd(Return)) %>%
+mutate(Roller = roll_sd(Return, n = back, fill = NA)) %>%
+ggplot() +
+geom_line(aes(date, SampleSD), color = "steelblue") +
+geom_hline(aes(date, yintercept = mean(Constant_var)), color = "red",
+alpha = 0.8, size = 2) +
+geom_line(aes(date, y = Roller), color = "darkgreen", alpha = 0.8,
+size = 2) +
+fmxdat::theme_fmx() +
+labs(title = "Sample Var, Constant Var and Rolling Var of USD/ZAR",
+caption = "Sample Var in blue, Constant Var in red and Rolling Var in Green",
+x = "Date", y = "Standard Deviation")
+
+roll_plot
+```
+
+
+# 2 USDZAR with carry trade and an undervalued dollar 
+
+This section investigates whether the USD/ZAR performs well during periods where carry trade is favorable, and during periods where currency valuations are cheap. The code below is a lot of wrangling, but the important figure that I produce compares all three factors simultaneously. I use the Deutsche Bank G10 Harvest Index as the proxy for the returns of a carry strategy. This index reflects the return of being long the 3 high-yielding currencies
+against being short the 3 low-yielding currencies within the G10 currency universe. Therefore, an increase in the return of the index represents favourable carry trade. With the index, I construct quarterly log returns. 
+
+Secondly, I use the ZAR/USD prices, and similarly construct the quarterly log returns. My understanding here is that positve returns actually mean a depreciating ZAR. If increased carry trade means increased capital inflows, and greater demand for rand (lower ZAR/USD), then the two series are actually negatively correlated. 
+
+Lastly, I use the Deutsche Bank FX PPP Index as the proxy for the returns of a value strategy. The FX PPP index reflects the return of being long the 3 currencies with the highest rank (undervalued currencies) against being short the 3 currencies with the lowest rank (overvalued currencies) within G10 currency universe. Therefore, if value is doing well then undervalued currencies have greater returns than overvalued currencies. I show the figure below, and then continue my discussion. 
+
+
+```{r, warning=FALSE}
+cncy_Carry_period_2 <- read_rds("data/cncy_Carry.rds") %>%
+select(-Name) %>% arrange(date) %>% mutate(day = weekdays(as.Date(date))) %>%
+filter(day == "Monday") %>% select(-day) %>%
+mutate(return = log(Price) - log(lag(Price))) %>% slice(-1) %>%
+filter(date > ymd(20160601))
+
+cncy_Carry_Price <- read_rds("data/cncy_Carry.rds") %>%
+select(-Name) %>% arrange(date) %>%
+ggplot() + geom_line(aes(date, Price), color = "steelblue") +
+fmxdat::theme_fmx() +
+labs(title = "Carry Trade Returns",
+subtitle = "Carry Trade Returns as shown by the Deutsche Bank G10 Harvest Index from 2000 to 2021",
+x = "Date", y = "Carry Trade Index")
+
+######
+
+cncy_Carry_period <- read_rds("data/cncy_Carry.rds") %>%
+select(-Name) %>% arrange(date) %>% mutate(month = month(as.Date(date))) %>%
+filter(month == c("1", "4", "7", "10")) %>% mutate(day = day(as.Date(date))) %>%
+filter(day < 7) %>% slice(-23, -26, -32, -34) %>%
+select(-day, -month) %>% mutate(return_carry = log(Price) - log(lag(Price))) %>%
+slice(-1) %>% select(-Price)
+
+
+### USD ZAR
+cncy_Carry_period_dates <- read_rds("data/cncy_Carry.rds") %>% select(-Name) %>%
+arrange(date) %>% mutate(month = month(as.Date(date))) %>%
+filter(month == c("1", "4", "7", "10")) %>% mutate(day = day(as.Date(date))) %>%
+filter(day < 7) %>% slice(-23, -26, -32, -34) %>%
+select(-day, -month) %>% pull(date)
+
+cncy_plot <- read_rds("data/currencies.rds") %>% filter(Name == "SouthAfrica_Cncy") %>%
+select(-Name) %>% filter(date %in% cncy_Carry_period_dates) %>%
+mutate(return_zar = log(Price) - log(lag(Price))) %>% slice(-1) %>% select(-Price)
+
+combined_plot_1 <- left_join(cncy_Carry_period, cncy_plot, by = "date")
+
+combined_plot_1_plot <- combined_plot_1 %>%
+gather(type, return, -date) %>%
+ggplot() + geom_line(aes(date, return, color = type)) +
+fmxdat::theme_fmx() +
+labs(title = "Carry Trade Returns and USD/ZAR returns",
+subtitle = "Carry Trade Log Returns and USD/ZAR log returns",
+x = "Date", y = "Log Returns")
+
+# we expect them to invert if the hypothesis is true.
+
+######### cheap currency valuations - combined this with above.
+
+cncy_value <- read_rds("data/cncy_value.rds") %>% select(-Name) %>% arrange(date) %>%
+filter(date %in% cncy_Carry_period_dates) %>%
+mutate(return_value = log(Price) - log(lag(Price))) %>% slice(-1) %>% select(-Price)
+
+three_combo_plot <- left_join(combined_plot_1, cncy_value , by = "date") %>%
+gather(type, return, -date) %>%
+ggplot() + geom_line(aes(date, return, color = type)) +
+fmxdat::theme_fmx() +
+labs(title = "Carry Trade Returns, USD/ZAR returns and Undervalued 
+Currency Returns",
+subtitle = "Carry Trade Log Returns, USD/ZAR log returns and log returns 
+of the value index for currencies",
+x = "Date", y = "Log Returns")
+
+three_combo_plot
+```
+It is apparent that the return on the ZAR mimics an inverted return on carry, or rather show negative correlation. This is completely consistent with economic literature concerning EME currencies as carry trade is a large determinant of capital flows and exchange rate appreciation. Therefore, as carry trade becomes favourable (red line increases), then the ZAR/USD will decrease, generally. The return on value shows less amplitude and more consisntency than the other series. I would not go as far to say that the ZAR/USD strengthens when value is high generally, at least not using my figure. 
+
+# 3 Benefits to the ZAR of a strong dollar 
+
+This section investigates whether the USD/ZAR performs better when the dollar is stronger. In order to proxy for a strong dollar, I use the Bloomberg Dollar Spot Index which tracks the performance of a basket of 10 leading global currencies versus the U.S. Dollar. My thinking is that a strong dollar would be proxied by its levels relative to a basket of 10 other strategies to diversify away the effects of the counter-currency causing the valuation differences. I combine this with the USD/ZAR as we have used numerous times in this report. Again, I consider quarterly log returns. I consider quarters, and not months, in order to capture a longer period of time whilst preserving the ability to interpret the line graphs. Secodnly, I want to isolate signal as opposed to noise in capital flows, and I think that this is more likely to be presented in quarterly returns than monthly or weekly. 
+
+
+```{r}
+bbdxy <- read_rds("data/bbdxy.rds") %>% select(-Name) %>% arrange(date) %>%
+filter(date %in% cncy_Carry_period_dates) %>% # I'm using this to indicate quarterly data. 
+mutate(return_usd = log(Price) - log(lag(Price))) %>% slice(-1) %>% select(-Price)
+
+usdzar <- read_rds("data/currencies.rds") %>%
+filter(Name == "SouthAfrica_Cncy") %>% select(-Name) %>%
+filter(date %in% cncy_Carry_period_dates) %>%
+mutate(return_zar = log(Price) - log(lag(Price))) %>%
+slice(-1) %>% select(-Price)
+
+combo_2 <- left_join(bbdxy, usdzar, by = "date")
+
+plot_combo_2 <- combo_2 %>%
+gather(type, return, -date) %>%
+ggplot() + geom_line(aes(date, return, color = type)) +
+fmxdat::theme_fmx() +
+labs(title = "USD/ZAR returns and USD with a basket of currencies",
+subtitle = "USDZAR relative to the strenght of the USD",
+x = "Date", y = "Log Returns")
+
+plot_combo_2
+```
+The figure above shows decent positive correlation for most periods. This means that as the dollar strenghtens relative to the basket of 10, then it strengthens relative to the ZAR, as well. This is seen as the ZAR/USD increases, meaning the ZAr depreciates. Therefore, I disagree that a strong dollar causes a strong rand, where a stronger rand is somewhat representative of risk-off sentiment or capital inflows into SOuth Africa. 
+
+
+
+
+
+
+
+
+
+

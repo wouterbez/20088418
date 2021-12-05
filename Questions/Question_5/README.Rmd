@@ -1,0 +1,227 @@
+---
+title: "MSCI Funds"
+author: "Wouter Bezuidenhout"
+output: pdf_document
+---
+
+# Setup 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pacman)
+pacman::p_load("tidyverse", "fmxdat", "devtools", "tbl2xts", "lubridate", "readr",
+"PerformanceAnalytics", "tidyr", "FactoMineR", "factoextra", "MTS", "robustbase", "rmgarch", "rugarch", "rmsfuns")
+
+msci <- read_rds("data/msci.rds")
+bonds <- read_rds("data/bonds_10y.rds")
+comms <- read_rds("data/comms.rds")
+```
+
+# Introduction 
+
+This report uses the return profiles of different asset classes to investigate if diversification ability has decreased in the last decade. The main methodology that I implement a DCC model allowing for correlations between series to vary over time. I firstly obtain a GARCH estimate of the univariate volatility of each series. I obtain standardized residuals and use these to estimate the dynamic conditional correlations. I rely largely on Nico's notes for this report. 
+
+# Data Wrangling 
+
+I want to compare the dynamic correlations between different asset classes to see to what extent one can diversify by holding different asset classes. For this, I choose the following: MSCI_ACWI, MSCI_RE, MSCI_USA, MSCI_USREIT and the BCom index. The asset classes include commodities, equity and real estate. An extension to this report should consider how to include bonds - I have not done so as it was not immediately apparent to me if bond yields were sufficient to consider bond correlations or if one needed bond prices as well. 
+
+```{r}
+###MSCI Setup
+msci_names <- read_rds("data/msci.rds") %>% pull(Name) %>% unique
+msci_names_chosen <- c("MSCI_ACWI", "MSCI_RE", "MSCI_USA", "MSCI_USREIT")
+
+msci_rtn <- msci %>% filter(date > ymd(20100101)) %>%
+filter(Name %in% msci_names_chosen) %>%
+arrange(date) %>% group_by(Name) %>%
+mutate(dlogret = log(Price) - log(lag(Price))) %>%
+mutate(scaled_ret = (dlogret - mean(dlogret, na.rm = T))) %>%
+slice(-1, -2, -3, -4) %>%
+select(-Price, -dlogret) %>% rename(return = scaled_ret) 
+
+### Commodities Setup
+comms <- read_rds("data/comms.rds") %>% filter(date > ymd(20100101)) %>%
+arrange(date) %>% group_by(Name) %>% mutate(dlogret = log(Price) - log(lag(Price))) %>%
+mutate(scaled_ret = (dlogret - mean(dlogret, na.rm = T))) %>% slice(-1, -2, -3) %>%
+select(-Price, -dlogret) %>% rename(return = scaled_ret) %>% filter(Name == "Bcom_Index")
+
+comms_wide <- comms %>% pivot_wider(names_from = Name, values_from = return)
+msci_wide <- msci_rtn %>% pivot_wider(names_from = Name, values_from = return)
+# I exclude oil and gold. 
+
+bonds_names <- read_rds("data/bonds_10y.rds") %>% pull(Name) %>% unique
+bonds <- read_rds("data/bonds_10y.rds") %>% filter(Name == "US_10Yr")
+
+# Connect MSCI and Commodities
+xts_rtn <- left_join(msci_wide, comms_wide, by = "date") %>%
+gather(Name, Return, -date) %>% tbl_xts(.,cols_to_xts = "Return", spread_by = "Name")
+
+```
+
+# Implement GARCH model to find standardised residuals
+
+First, I fit the univariate GARCH model to each of the series in the dataframe. I pick a VAR order of zero for the mean equation, and simply use the mean of the series. A GARCH(1,1) is run, this results in et and sigmat, which I use the find the standardised residuals, zt. From the figure below, it becomes clear that the asset classes are highly correlated. 
+
+```{r include=T}
+DCCPre <- dccPre(xts_rtn, include.mean = T, p = 0)
+
+Vol <- DCCPre$marVol
+colnames(Vol) <- colnames(xts_rtn)
+Vol <- data.frame( cbind( date = index(xts_rtn), Vol)) %>%
+mutate(date = as.Date(date)) %>%  tbl_df()  
+
+TidyVol <- Vol %>% gather(Stocks, Sigma, -date)
+
+```
+
+```{r}
+ggplot(TidyVol) + geom_line(aes(x = date, y = Sigma, colour = Stocks))
+```
+
+
+# Implement the DCC model 
+
+I obtained the standardised residuals, and can now use these to calculate the DCC model. 
+
+```{r}
+StdRes <- DCCPre$sresi
+# There are problems when I detach tbl2xts, however, 
+# I can do it if working in an R script. 
+# detach("package:tidyverse", unload=TRUE)
+# detach("package:fmxdat", unload=TRUE)
+# detach("package:rmsfuns", unload=TRUE)
+# detach("package:tbl2xts", unload=TRUE)
+DCC <- dccFit(StdRes, type="Engle")
+
+pacman::p_load("tidyverse", "tbl2xts", "broom")
+
+### 
+
+Rhot <- DCC$rho.t
+ReturnSeries = xts_rtn
+DCC.TV.Cor = Rhot
+```
+
+Now I have an estimated DCC model. Using this, I can calculate the bivariate correlation between all the pairs of asset classes that I have. I use Nico's function below to rename certain elements first. 
+
+```{r}
+renamingdcc <- function(ReturnSeries, DCC.TV.Cor) {
+ncolrtn <- ncol(ReturnSeries)
+namesrtn <- colnames(ReturnSeries)
+paste(namesrtn, collapse = "_")
+    
+nam <- c()
+xx <- mapply(rep, times = ncolrtn:1, x = namesrtn)
+    nam <- c()
+    for (j in 1:(ncolrtn)) {
+        for (i in 1:(ncolrtn)) {
+            nam[(i + (j-1)*(ncolrtn))] <- paste(xx[[j]][1], xx[[i]][1], sep="_")
+        }
+    }
+
+    colnames(DCC.TV.Cor) <- nam
+    
+    # So to plot all the time-varying correlations wrt SBK:
+    # First append the date column that has (again) been removed...
+    DCC.TV.Cor <- 
+        data.frame( cbind( date = index(ReturnSeries), DCC.TV.Cor)) %>% 
+        # Add date column which dropped away...
+        mutate(date = as.Date(date)) %>%  tbl_df() 
+    
+    DCC.TV.Cor <- DCC.TV.Cor %>% gather(Pairs, Rho, -date)
+    
+    DCC.TV.Cor
+    
+}
+
+Rhot <- renamingdcc(ReturnSeries = xts_rtn, DCC.TV.Cor = Rhot)
+
+# head(Rhot %>% arrange(date))
+```
+
+# DCC Plots
+
+```{r}
+g1 <- ggplot(Rhot %>% filter(grepl("MSCI_ACWI_", Pairs ), !grepl("_MSCI_ACWI", Pairs)) ) +
+geom_line(aes(x = date, y = Rho, colour = Pairs)) +
+ggtitle("Dynamic Conditional Correlations: MSCI_ACWI")
+print(g1)
+```
+
+The figure above plots the DCC between the MSCI_ACWI (all country world return) and all the other variables. One can observe that ACWI and the MSCI_USA are strongly correlated. This is interesting, and I could argue that US equity booms contribute strongly to the ACWI as a constituent. But more so, the largest constituents of the ACWI, like the Euro and UK Area are also correlated to US equity returns. At times the correlation between commodities and the ACWI are low. 
+
+```{r}
+g2 <- ggplot(Rhot %>% filter(grepl("Bcom_Index_", Pairs ), !grepl("_Bcom_Index", Pairs)) ) +
+geom_line(aes(x = date, y = Rho, colour = Pairs)) +
+ggtitle("Dynamic Conditional Correlations: Bcom_Index")
+print(g2)
+```
+
+The figure above plots the DCC between the Bcom_Index (commodity index) and all the other variables. One can observe that y-axis is a level lower than the figure considering ACWI. This is understandable as commodities are less correlated with equity and real estate than their correlation with one another. The largest correlation is actually commodities and the ACWI. This is intuitive because the countries that stand to gain most from commdoity booms are not represented in the US indexes I have included, such as the Middle East or Northern Europe or Russia. 
+
+```{r}
+g3 <- ggplot(Rhot %>% filter(grepl("MSCI_RE_", Pairs ), !grepl("_MSCI_RE", Pairs)) ) +
+geom_line(aes(x = date, y = Rho, colour = Pairs)) +
+ggtitle("Dynamic Conditional Correlations: MSCI_RE")
+print(g3)
+```
+
+The figure above plots the DCC between the MSCI_RE (global real estate) and all the other variables. One can observe that the MSCI_RE and MSCI_REIT are strongly correlated. This is to be expected as they trade in the same asset class. Intuitively again, global RE is more correlated with global equities than with US equities. 
+
+```{r}
+g4 <- ggplot(Rhot %>% filter(grepl("MSCI_USREIT_", Pairs ), 
+    !grepl("_MSCI_USREIT", Pairs)) ) +
+geom_line(aes(x = date, y = Rho, colour = Pairs)) +
+ggtitle("Dynamic Conditional Correlations: MSCI_USREIT")
+print(g4)
+
+```
+
+The figure above plots the DCC between the MSCI_REIT (real estate investment trusts) and all the other variables. One can observe that the MSCI_RE and MSCI_REIT are strongly correlated. This is to be expected as they trade in the same asset class. Furthermore, US_REITS are strongly correlated to US equities. This is intuitive as credit markets drive both real estate and equities. 
+
+```{r}
+g5 <- ggplot(Rhot %>% filter(grepl("MSCI_USA_", Pairs ), 
+    !grepl("_MSCI_USA", Pairs)) ) +
+geom_line(aes(x = date, y = Rho, colour = Pairs)) +
+ggtitle("Dynamic Conditional Correlations: MSCI_USA")
+print(g5)
+
+```
+
+The figure above plots the DCC between the MSCI_USA (return of equity in the USA) and all the other variables. One can observe that the MSCI_US and the MSCI_ACWI are strongly correlated. Again, I argue this is because the US is a big constituent in the ACWI, and the other constituents correlate strongly with the US. 
+
+# Conclusion 
+
+My investigation has proven that the dynamic relationship of correlation between asset classes has evolved. Some asset classes are more strongly correlated now than before, whilst others not. My analysis focused specifically on the last 11 years. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
