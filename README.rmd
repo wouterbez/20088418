@@ -32,14 +32,14 @@ bbdxy <- read_rds("data/bbdxy.rds")
 msci <- read_rds("data/msci.rds")
 bonds <- read_rds("data/bonds_10y.rds")
 comms <- read_rds("data/comms.rds")
+# Q6 
+MAA <- read_rds("data/MAA.rds")
+msci <- read_rds("data/msci.rds") %>% filter(Name %in% c("MSCI_ACWI", "MSCI_USA", "MSCI_RE", "MSCI_Jap"))
 
 library(pacman)
 p_load("tidyr","tbl2xts", "devtools", "lubridate","readr","PerformanceAnalytics", "tidyverse",
 "fmxdat", "rmsfuns", "xts", "tidyverse", "tidyr", "FactoMineR", "factoextra", "readr", "devtools",
-"rugarch", "forecast", "RcppRoll", "robustbase", "rmgarch", "MTS")
-
-# pacman::p_load("tidyverse", "fmxdat", "devtools", "tbl2xts", "lubridate", "readr",
-# "PerformanceAnalytics", "tidyr", "FactoMineR", "factoextra", "MTS", "robustbase", "rmgarch", "rugarch", "rmsfuns")
+"rugarch", "forecast", "RcppRoll", "robustbase", "rmgarch", "MTS", "PortfolioAnalytics")
 
 ```
 
@@ -978,7 +978,24 @@ My investigation has proven that the dynamic relationship of correlation between
 
 # Question 6 - Portfolio Construction 
 
-time constraints.. 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r}
+msci_names <- msci %>% pull(Name) %>% unique
+MAA_names <- MAA %>% pull(Ticker) %>% unique
+
+msci_wide <- msci %>% pivot_wider(names_from = Name, values_from = Price)
+MAA_wide <- MAA %>% select(date, Ticker, Price) %>%
+pivot_wider(names_from = Ticker, values_from = Price)
+
+complete_index <- left_join(msci_wide, MAA_wide, by = "date")
+
+
+```
+
 
 
 

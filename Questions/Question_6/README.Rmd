@@ -6,5 +6,27 @@ output: pdf_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
+MAA <- read_rds("data/MAA.rds")
+msci <- read_rds("data/msci.rds") %>% filter(Name %in% c("MSCI_ACWI", "MSCI_USA", "MSCI_RE", "MSCI_Jap"))
+
+library(pacman)
+pacman::p_load("tidyverse", "fmxdat", "devtools", "tbl2xts", "lubridate", "readr",
+"PerformanceAnalytics", "tidyr", "FactoMineR", "factoextra", "MTS", "robustbase", "rmgarch", "rugarch", "PortfolioAnalytics")
+
+
+```
+
+```{r}
+msci_names <- msci %>% pull(Name) %>% unique
+MAA_names <- MAA %>% pull(Ticker) %>% unique
+
+msci_wide <- msci %>% pivot_wider(names_from = Name, values_from = Price)
+MAA_wide <- MAA %>% select(date, Ticker, Price) %>%
+pivot_wider(names_from = Ticker, values_from = Price)
+
+complete_index <- left_join(msci_wide, MAA_wide, by = "date")
+
+
 ```
 

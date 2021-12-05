@@ -985,7 +985,7 @@ correlated.
 DCCPre <- dccPre(xts_rtn, include.mean = T, p = 0)
 ```
 
-    ## Sample mean of the returns:  -0.0000009367445 -0.000002481525 -0.000002108653 -0.000003401326 -0.00000134006 
+    ## Sample mean of the returns:  -0.0000009367445 -0.000002481525 -0.000002108653 -0.00000134006 
     ## Component:  1 
     ## Estimates:  0.000002 0.14844 0.833951 
     ## se.coef  :  0 0.016019 0.015944 
@@ -999,10 +999,6 @@ DCCPre <- dccPre(xts_rtn, include.mean = T, p = 0)
     ## se.coef  :  0.000001 0.017059 0.017015 
     ## t-value  :  7.397643 10.39995 46.34402 
     ## Component:  4 
-    ## Estimates:  0.000003 0.127666 0.850188 
-    ## se.coef  :  0.000001 0.013641 0.014989 
-    ## t-value  :  5.123906 9.358739 56.71963 
-    ## Component:  5 
     ## Estimates:  0.000001 0.049674 0.939936 
     ## se.coef  :  0 0.006351 0.007842 
     ## t-value  :  3.47771 7.820945 119.8646
@@ -1038,9 +1034,9 @@ StdRes <- DCCPre$sresi
 DCC <- dccFit(StdRes, type="Engle")
 ```
 
-    ## Estimates:  0.95 0.03047285 7.717244 
-    ## st.errors:  0.006591905 0.003051537 0.3701726 
-    ## t-values:   144.1161 9.986068 20.84769
+    ## Estimates:  0.95 0.02995035 7.422918 
+    ## st.errors:  0.01186295 0.00503629 0.3843819 
+    ## t-values:   80.08127 5.946907 19.31131
 
 ``` r
 pacman::p_load("tidyverse", "tbl2xts", "broom")
@@ -1186,4 +1182,13 @@ specifically on the last 11 years.
 
 # Question 6 - Portfolio Construction
 
-time constraints..
+``` r
+msci_names <- msci %>% pull(Name) %>% unique
+MAA_names <- MAA %>% pull(Ticker) %>% unique
+
+msci_wide <- msci %>% pivot_wider(names_from = Name, values_from = Price)
+MAA_wide <- MAA %>% select(date, Ticker, Price) %>%
+pivot_wider(names_from = Ticker, values_from = Price)
+
+complete_index <- left_join(msci_wide, MAA_wide, by = "date")
+```
